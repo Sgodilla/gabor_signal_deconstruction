@@ -16,13 +16,19 @@ __all__ = [
 def _apply_fft_smoothing_along_dim(
     data: torch.Tensor, sigma: float, dim: int
 ) -> torch.Tensor:
-    """FFT‑based Gaussian smoothing along a single dimension."""
+    """Gaussian smoothing along a single dimension using direct convolution.
+
+    This version replaces the original FFT-based implementation to avoid
+    boundary artifacts (rippling). It uses a direct convolution with
+    reflection padding for superior handling of signal edges.
+    """
     if sigma <= 0:
         return data
 
     device, dtype = data.device, data.dtype
     dim_size = data.shape[dim]
 
+    # --- 1. Create the Gaussian kernel ---
     ksize = int(6 * sigma) + 1
     if ksize % 2 == 0:
         ksize += 1
@@ -32,26 +38,39 @@ def _apply_fft_smoothing_along_dim(
     kernel = torch.exp(-(x**2) / (2 * sigma**2))
     kernel = kernel / kernel.sum()
 
+    # --- 2. Reshape data for 1D convolution ---
+    # Move the target dimension to the end for easier processing.
     dims = list(range(data.ndim))
     dims[dim], dims[-1] = dims[-1], dims[dim]
-    data_perm = data.permute(dims)
+    data_perm = data.permute(*dims)
     orig_shape = data_perm.shape
-    flat = data_perm.reshape(-1, orig_shape[-1])
 
-    total = orig_shape[-1] + ksize - 1
-    nfft = 2 ** int(np.ceil(np.log2(total)))
+    # Flatten all dimensions except the last one (the convolution dimension).
+    # Shape becomes (N_batch_flat, Length)
+    flat_data = data_perm.reshape(-1, orig_shape[-1])
+    # Add a channel dimension for conv1d: (N_batch_flat, 1, Length)
+    conv_input = flat_data.unsqueeze(1)
 
-    flat_pad = F.pad(flat, (0, nfft - orig_shape[-1]))
-    kern_pad = F.pad(kernel, (0, nfft - ksize))
+    # Prepare the kernel for conv1d: (C_out, C_in/groups, K_size)
+    conv_kernel = kernel.view(1, 1, -1)
 
-    flat_f = torch.fft.rfft(flat_pad, n=nfft)
-    kern_f = torch.fft.rfft(kern_pad, n=nfft)
-    conv = torch.fft.irfft(flat_f * kern_f.unsqueeze(0), n=nfft)
+    # --- 3. Pad and convolve ---
+    # Use 'reflect' padding to minimize edge artifacts. The amount of
+    # padding on each side is (ksize - 1) / 2 for a 'same' convolution.
+    padding_size = (ksize - 1) // 2
+    padded_input = F.pad(conv_input, (padding_size, padding_size), mode="reflect")
 
-    start = (ksize - 1) // 2
-    conv = conv[:, start : start + orig_shape[-1]]
-    conv = conv.reshape(orig_shape)
-    return conv.permute(dims)
+    # Perform the 1D convolution with 'valid' padding as we have already padded.
+    conv_output = F.conv1d(padded_input, conv_kernel, padding="valid")
+
+    # --- 4. Reshape back to original dimensions ---
+    # Remove the channel dimension and reshape to the original (permuted) shape.
+    output_perm = conv_output.squeeze(1).reshape(orig_shape)
+
+    # Permute dimensions back to their original order.
+    final_output = output_perm.permute(*dims)
+
+    return final_output
 
 
 # ------------------------------------------------------------
