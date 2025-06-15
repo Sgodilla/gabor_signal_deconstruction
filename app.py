@@ -3,8 +3,14 @@ import time
 import torch
 import numpy as np
 from gabor_objective import compute_gabor_objective
+from gabor_objective_fixed import (
+    compute_gabor_pre_smooth_fixed,
+    compute_gabor_pre_smooth_simple_fix,
+    compute_gabor_pre_smooth_tapered,
+)
 from gabor_objective_optimized import compute_gabor_objective_fast
 from gabor_objective_tests import (
+    compute_gabor_analytic,
     compute_gabor_old,
     compute_gabor_optimized,
     compute_gabor_pre_smooth,
@@ -23,7 +29,6 @@ from gabor_visualizer import (
 from filters import remove_gabor_ripples
 from objective_visualizer import (
     visualize_gabor_objective_slice,
-    visualize_gabor_objective_volume,
 )
 
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -145,7 +150,7 @@ end = time.time()
 st.write(f"Pre-smoooth fitness execution time: {end - start:.4f} seconds")
 print(f"Pre-smoooth fitness execution time: {end - start:.4f} seconds\n")
 
-# start = time.time()
+start = time.time()
 fitness_function_optimized = compute_gabor_optimized(
     signal,
     x,
@@ -157,6 +162,19 @@ fitness_function_optimized = compute_gabor_optimized(
 end = time.time()
 st.write(f"Optimized fitness execution time: {end - start:.4f} seconds")
 print(f"Optimized fitness execution time: {end - start:.4f} seconds\n")
+
+start = time.time()
+fitness_function_analytic = compute_gabor_analytic(
+    signal,
+    x,
+    frequencies,
+    sigmas,
+    peak_enhancement=2.0,  # Enhances peaks vs noise
+    position_smoothing_sigma=20.0,  # Reduces spurious maxima
+)
+end = time.time()
+st.write(f"Analytic fitness execution time: {end - start:.4f} seconds")
+print(f"Analytic fitness execution time: {end - start:.4f} seconds\n")
 
 # start = time.time()
 # filtered_conv_heatmap = apply_adaptive_lowpass_filter(conv_heatmap, frequencies)
@@ -184,6 +202,14 @@ visualize_gabor_objective_slice(
     sigmas,
     fitness_function_pre_smooth,
     "Gabor Fitness Function - Pre-smoooth",
+)
+
+visualize_gabor_objective_slice(
+    x,
+    frequencies,
+    sigmas,
+    fitness_function_analytic,
+    "Gabor Fitness Function - Analytic",
 )
 
 # visualize_gabor_objective_slice(

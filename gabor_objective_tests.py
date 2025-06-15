@@ -197,3 +197,75 @@ def compute_gabor_optimized(
     return _envelope_from_conv(
         conv_r, conv_i, real, imag, peak_enhancement, len(frequencies), len(sigmas)
     )
+
+
+def compute_gabor_analytic(
+    signal: torch.Tensor,
+    x: torch.Tensor,
+    frequencies: torch.Tensor,
+    sigmas: torch.Tensor,
+    *,
+    peak_enhancement: float = 2.0,
+    position_smoothing_sigma: float = 0.0,
+):
+    """
+    Convolve `signal` with a bank of complex Gabors, *pre*-smoothed by a
+    Gaussian of width `position_smoothing_sigma`, using a **single FFT**
+    and an exact closed-form kernel.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if position_smoothing_sigma == 0:
+        # shortcut to the raw Gabor path (no carrier scaling, no attenuation)
+        return compute_gabor_old(
+            signal,
+            x,
+            frequencies,
+            sigmas,
+            peak_enhancement,
+            position_smoothing_sigma=0.0,
+        )
+
+    device, dtype = signal.device, signal.dtype
+    σ = sigmas.to(device)  # (|σ|)
+    σ_s = torch.tensor(position_smoothing_sigma, device=device, dtype=dtype)
+    σ_c = torch.sqrt(σ**2 + σ_s**2)  # (|σ|)
+
+    # ---------------- grids --------------------------------------------------
+    f_grid, σ_grid = torch.meshgrid(
+        frequencies.to(device), σ, indexing="ij"
+    )  # each (|f|,|σ|)
+    σc_grid = torch.sqrt(σ_grid**2 + σ_s**2)
+    α_grid = σ_grid**2 / σc_grid**2
+    amp_grid = (σ_grid / σc_grid) * torch.exp(
+        -2 * (np.pi**2) * (f_grid**2) * (σ_grid**2) * (σ_s**2) / (σc_grid**2)
+    )
+
+    # ---------------- build kernel in space domain --------------------------
+    K = f_grid.numel()  # total filters
+    σc_flat = σc_grid.reshape(-1)  # (K,)
+    αf_flat = (α_grid * f_grid).reshape(-1)  # (K,)
+    amp_flat = amp_grid.reshape(-1)  # (K,)
+
+    x_exp = x.to(device).unsqueeze(0).repeat(K, 1)  # (K,|x|)
+    norm = 1.0 / torch.sqrt(2 * np.pi * σc_flat[:, None])
+    gauss = torch.exp(-(x_exp**2) / (2 * σc_flat[:, None] ** 2))
+
+    real = (
+        amp_flat[:, None]
+        * norm
+        * gauss
+        * torch.cos(2 * np.pi * αf_flat[:, None] * x_exp)
+    )
+    imag = (
+        amp_flat[:, None]
+        * norm
+        * gauss
+        * torch.sin(2 * np.pi * αf_flat[:, None] * x_exp)
+    )
+
+    # ---------------- convolution & envelope --------------------------------
+    conv_r, conv_i = _fft_convolve_real_imag(signal, real, imag)
+    env = _envelope_from_conv(
+        conv_r, conv_i, real, imag, peak_enhancement, len(frequencies), len(sigmas)
+    )
+    return env
